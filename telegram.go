@@ -22,7 +22,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"time"
 
 	telegram "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
@@ -114,9 +113,15 @@ func (c *container) add(x context.Context, f *Forwarder, v, m, d string, o chan<
 	if err == errNotImage {
 		switch {
 		case strings.HasSuffix(m, "/gif"):
-			o <- telegram.NewAnimation(c.recv, i)
+			o <- telegram.AnimationConfig{
+				Caption:  d,
+				BaseFile: telegram.BaseFile{File: i, BaseChat: telegram.BaseChat{ChatID: c.recv}},
+			}
 		case strings.HasPrefix(m, "video/"):
-			o <- telegram.NewVideo(c.recv, i)
+			o <- telegram.VideoConfig{
+				Caption:  d,
+				BaseFile: telegram.BaseFile{File: i, BaseChat: telegram.BaseChat{ChatID: c.recv}},
+			}
 		default:
 			f.log.Error(`[bot %d]: Received an invalid File "%s" (mime: %s), not forwarding it!`, c.bot.Self.ID, v, m)
 			return addFailed
@@ -252,18 +257,15 @@ func (c *container) receive(x context.Context, f *Forwarder, g *sync.WaitGroup, 
 			}
 			i, m := getTarget(n.Message)
 			if len(i) == 0 {
-				if len(n.Message.Text) > 0 {
-					if n.Message.Text == "/delete" {
-						o <- telegram.NewMessage(n.Message.Chat.ID, `Use "/delete" with an image to delete it.`)
-					} else {
-						if f.lock.Lock(); strings.HasPrefix(n.Message.Text, "/clear") {
-							delete(f.captions, n.Message.Chat.ID)
-							o <- telegram.NewMessage(n.Message.Chat.ID, `Removed any current cached caption!`)
-						} else {
-							f.captions[n.Message.Chat.ID] = caption{Tag: n.Message.Text, Time: time.Now().Add(captionTimeout)}
-						}
-						f.lock.Unlock()
-					}
+				switch {
+				case len(n.Message.Text) == 0:
+				case strings.HasPrefix(n.Message.Text, "/del"):
+					o <- telegram.NewMessage(n.Message.Chat.ID, `Use "/delete" with an image to delete it.`)
+				case strings.HasPrefix(n.Message.Text, "/clear"):
+					o <- telegram.NewMessage(n.Message.Chat.ID, `Removed any current cached caption!`)
+					f.caps.clear(n.Message.From.ID)
+				default:
+					f.caps.set(n.Message.From.ID, n.Message.Text)
 				}
 				break
 			}
@@ -272,27 +274,28 @@ func (c *container) receive(x context.Context, f *Forwarder, g *sync.WaitGroup, 
 				fallthrough
 			case len(n.Message.Caption) > 3 && n.Message.Caption[0] == '/' && strings.HasPrefix(n.Message.Caption, "/del"):
 				f.log.Trace("[bot %d]: Received a possible delete command from %s!", c.bot.Self.ID, n.Message.From.String())
-				if _, ok := f.captions[n.Message.Chat.ID]; ok {
-					f.lock.Lock()
-					delete(f.captions, n.Message.Chat.ID)
-					f.lock.Unlock()
-				}
-				if c.delete(x, f, i, m, o) {
+				if f.caps.clear(n.Message.From.ID); c.delete(x, f, i, m, o) {
 					o <- telegram.NewMessage(n.Message.Chat.ID, "I've removed that image! (if it existed!)")
 				} else {
 					o <- telegram.NewMessage(n.Message.Chat.ID, "I'm sorry, but I cannot process that image.")
 				}
 			default:
-				if _, ok := f.captions[n.Message.Chat.ID]; ok {
-					f.lock.Lock()
-					n.Message.Caption = f.captions[n.Message.Chat.ID].Tag
-					f.lock.Unlock()
-				} else if len(n.Message.MediaGroupID) > 0 && len(n.Message.Caption) > 0 {
-					f.lock.Lock()
-					f.captions[n.Message.Chat.ID] = caption{Tag: n.Message.Text, Time: time.Now().Add(captionTimeout)}
-					f.lock.Unlock()
+				var (
+					s  string
+					ok bool
+				)
+				if len(n.Message.MediaGroupID) > 0 {
+					if s, ok = f.groups.get(n.Message.MediaGroupID, false); !ok {
+						if s, ok = f.caps.get(n.Message.From.ID, true); ok {
+							f.groups.set(n.Message.MediaGroupID, s)
+						} else if len(n.Message.Caption) > 0 {
+							f.groups.set(n.Message.MediaGroupID, n.Message.Caption)
+						}
+					}
+				} else if s, ok = f.caps.get(n.Message.From.ID, true); !ok {
+					s = n.Message.Caption
 				}
-				switch c.add(x, f, i, m, n.Message.Caption, o) {
+				switch c.add(x, f, i, m, s, o) {
 				case addFailed:
 					o <- telegram.NewMessage(n.Message.Chat.ID, "I'm sorry, but I cannot process that image.")
 				case addSuccess:

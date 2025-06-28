@@ -27,7 +27,6 @@ import (
 	"strconv"
 	"sync"
 	"syscall"
-	"time"
 
 	"github.com/PurpleSec/logx"
 	"github.com/PurpleSec/mapper"
@@ -35,43 +34,17 @@ import (
 	telegram "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
 
-const captionTimeout = time.Minute * 5
-
-type caption struct {
-	Tag  string
-	Time time.Time
-}
-type imported struct {
-	ID    uint64 `json:"id"`
-	Bot   uint64 `json:"bot"`
-	File  string `json:"file"`
-	Image string `json:"image"`
-}
-
 // Forwarder is a struct that contains the threads and config values that can be
 // used to run the Forwarder Telegram bot.
 //
 // Use the 'New' function to properly create a Forwarder.
 type Forwarder struct {
-	log      logx.Log
-	sql      *mapper.Map
-	bots     []*container
-	lock     sync.Mutex
-	cancel   context.CancelFunc
-	captions map[int64]caption
-}
-type container struct {
-	ch    chan telegram.Chattable
-	key   string
-	bot   *telegram.BotAPI
-	recv  int64
-	users []int64
-}
-
-func (c *container) stop() {
-	c.bot.StopReceivingUpdates()
-	close(c.ch)
-	c.bot, c.ch = nil, nil
+	log    logx.Log
+	sql    *mapper.Map
+	bots   []*container
+	cancel context.CancelFunc
+	caps   maps[int64]
+	groups maps[string]
 }
 
 // Run will start the main Forwarder process and all associated threads. This
@@ -151,32 +124,6 @@ func (f *Forwarder) Import(s string) error {
 	}
 	return err
 }
-func (f *Forwarder) tick(x context.Context) {
-	t := time.NewTicker(5 * time.Minute)
-	for {
-		select {
-		case <-x.Done():
-			goto cleanup
-		case n := <-t.C:
-			f.log.Debug("Running Captions cleanup..")
-			f.lock.Lock()
-			var r []int64
-			for k, v := range f.captions {
-				if v.Time.After(n) {
-					continue
-				}
-				r = append(r, k)
-			}
-			for i := range r {
-				delete(f.captions, r[i])
-			}
-			f.log.Debug("Captions cleanup done! %d were removed.", len(r))
-			f.lock.Unlock()
-		}
-	}
-cleanup:
-	t.Stop()
-}
 
 // New returns a new Forwarder instance based on the passed config file path. This function will preform any
 // setup steps needed to start the Forwarder. Once complete, use the 'Run' function to actually start the Forwarder.
@@ -245,15 +192,10 @@ func New(s string, empty bool) (*Forwarder, error) {
 		return nil, errors.New("database schema extend failed: " + err.Error())
 	}
 	return &Forwarder{
-		sql:      m,
-		log:      l,
-		bots:     z,
-		captions: make(map[int64]caption),
+		sql:    m,
+		log:    l,
+		bots:   z,
+		caps:   maps[int64]{v: make(map[int64]caption)},
+		groups: maps[string]{v: make(map[string]caption)},
 	}, nil
-}
-func (c *container) start(x context.Context, f *Forwarder, g *sync.WaitGroup) {
-	r := c.bot.GetUpdatesChan(telegram.UpdateConfig{})
-	c.ch = make(chan telegram.Chattable, 128)
-	go c.send(x, f, g, c.ch)
-	go c.receive(x, f, g, c.ch, r)
 }
