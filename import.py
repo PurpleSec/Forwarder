@@ -20,13 +20,12 @@ from PIL import Image
 from io import BytesIO
 from hashlib import sha512
 from imagehash import phash
-from json import loads, dumps
+from json import dumps, loads
 from traceback import format_exc
-from sys import stderr, exit, argv
+from sys import argv, exit, stderr
 from argparse import ArgumentParser
 from telethon.sync import TelegramClient
-from os.path import expanduser, expandvars, exists
-
+from os.path import exists, expanduser, expandvars
 
 USAGE = """Forwarder Telegram Bot Channel Import Tool
 
